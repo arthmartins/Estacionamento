@@ -13,15 +13,16 @@ class App:
         self.porta = porta
         self.vagas_totais = vagas  # Vagas totais atribuídas a esta estação
         self.vagas_ocupadas = 0    # Inicialmente, nenhuma vaga está ocupada
+        porta_middleware = int(f"1{porta}")
         # Cada App tem seu próprio Middleware, configurado com o endereço do gerente.
-        self.middleware = Middleware(self.nome, '127.0.0.1', 8080, porta)
+        self.middleware = Middleware(self.nome, '127.0.0.1', 8080, porta_middleware, self)
         self.ativa = False
 
     def iniciar(self):
         # Inicia o middleware em uma thread separada para comunicação com o gerente.
-        middleware_thread = threading.Thread(target=self.middleware.iniciar)
+        middleware_thread = threading.Thread(target=self.middleware.servidor_tcp_middleware)
         middleware_thread.start()
-
+        
         # Inicia o servidor TCP em outra thread para receber comandos via TCP.
         server_thread = threading.Thread(target=self.servidor_tcp)
         server_thread.start()
@@ -49,15 +50,12 @@ class App:
 
             print(f'{self.nome} recebeu: {msg}')
             # Processa o comando recebido (ativar estação, por exemplo).
-            self.processar_comando(msg)
+            self.processar_comando(msg, cliente_socket)
 
-            # Envia uma resposta para o cliente após o processamento.
-            resposta = (f'Estação {self.nome} ativada com sucesso! ')
-            cliente_socket.sendall(resposta.encode('utf-8'))
             time.sleep(2)
         cliente_socket.close()
 
-    def processar_comando(self, comando):
+    def processar_comando(self, comando, cliente_socket):
         """ Função para processar os comandos recebidos via TCP """
         partes = comando.strip().split()
         if not partes:
@@ -67,13 +65,25 @@ class App:
 
         if codigo == "AE":
             self.ativar()
+            resposta = (f'Estação {self.nome} ativada com sucesso! ')
+            cliente_socket.sendall(resposta.encode('utf-8'))
+        
+        if codigo == "VD":
+            vagas = self.middleware.processar_vagas()
+            # tem que vir na resposta todas as vagas
+            resposta = (f'Estação {vagas}')
+            cliente_socket.sendall(resposta.encode('utf-8'))
         
     def ativar(self):
         # Ativa a estação e imprime as vagas disponíveis e ocupadas.
         self.ativa = True
-        print(f'{self.nome} foi ativado! Vagas Totais: {self.vagas_totais}, Vagas Ocupadas: {self.vagas_ocupadas}')
         
+        print(f'{self.nome} foi ativado! Vagas Totais: {self.vagas_totais}, Vagas Ocupadas: {self.vagas_ocupadas}')
         self.middleware.ativar()
+        
+        while not self.middleware.conectado:
+            time.sleep(1)
+            
 
 def distribuir_vagas_aleatoriamente(total_vagas, num_estacoes):
     """ Função para distribuir as vagas aleatoriamente entre as estações """
@@ -135,3 +145,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
