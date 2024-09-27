@@ -1,1 +1,0 @@
-Estação [('Station2', 6, 0, 6), ('Station7', 8, 0, 8), ('Station1', 6, 0, 6), ('Station5', 10, 0, 10)]

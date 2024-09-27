@@ -13,7 +13,7 @@ using namespace std;
 class CentralControl:  public Car{
 public:
     void readCommandFromFile(string cmdFile);
-    void handleCommand(string cmd, string dest_IP, int dest_Port);
+    void handleCommand(string cmd, string dest_IP, int dest_Port, int destination);
 
     CentralControl();
     ~CentralControl();

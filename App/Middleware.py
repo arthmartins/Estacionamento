@@ -1,33 +1,45 @@
 import time
 import threading
 import socket
+import re
+
+PING_INTERVAL = 1
+TIMEOUT_INTERVAL = 5
 
 class Middleware:
-    def __init__(self, nome_estacao, gerente_ip, gerente_porta, porta_app, app):
+    def __init__(self, nome_estacao, gerente_ip, gerente_porta, porta_middleware,porta_app , app):
         self.nome_estacao = nome_estacao
         self.ativa = False
         self.gerente_ip = gerente_ip
         self.gerente_porta = gerente_porta
         self.ip = '127.0.0.1'
-        self.porta_middleware = porta_app  # Porta do App associada a essa estação
+        self.porta_middleware = porta_middleware
+        self.porta_app = porta_app # Porta do App associada a essa estação
         self.conectado = False
         self.estacao_referencia = None  # Estação ativa que será usada como referência para a árvore.
         self.app = app
         self.estacao_conectada = None  # Estação conectada abaixo na árvore de encaminhamento
-
+        self.ultima_vez_heartbeat_referencia = time.time()  # Tempo do último ping recebido da estação de referência
+        self.ultima_vez_heartbeat_conectada = time.time()   # Tempo do último ping recebido da estação conectada
+        self.lock = threading.Lock()
                 
     def ativar(self):
         """ Ativa o middleware quando a estação for ativada """
         self.ativa = True
-        print(f'Middleware {self.nome_estacao} foi ativado pelo App!')
 
         # Conecta-se ao gerente primeiro
-        self.conectar_ao_gerente()
+        resposta = self.conectar_ao_gerente()
 
         # Aguardar até que esteja conectado
-        while not self.conectado:
+        while not resposta:
             time.sleep(1)
+        
+        # Thread para o envio contínuo de pings via TCP
+        threading.Thread(target=self.heartbeat, daemon=True).start()
+        # Thread para monitorar os heartbeats
+        threading.Thread(target=self.monitor_heartbeat, daemon=True).start()
 
+        return "Estação ativada com sucesso!"
 
     def servidor_tcp_middleware(self):
         
@@ -35,12 +47,17 @@ class Middleware:
         servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         servidor.bind((self.ip, self.porta_middleware))
         servidor.listen(10)  # Configura o servidor para aceitar até 5 conexões simultâneas.
-
-        while True:
-            cliente, endereco = servidor.accept()
-            # Cria uma nova thread para tratar cada conexão de cliente.
-            cliente_thread = threading.Thread(target=self.lidar_com_cliente_middleware, args=(cliente,))
-            cliente_thread.start()
+        try:
+            while True:
+                cliente, endereco = servidor.accept()
+                with self.lock:
+                    # Cria uma nova thread para tratar cada conexão de cliente.
+                    cliente_thread = threading.Thread(target=self.lidar_com_cliente_middleware, args=(cliente,))
+                    cliente_thread.start()
+                
+        except KeyboardInterrupt:
+            servidor.close()
+            print("Servidor encerrado.")
             
             
     def lidar_com_cliente_middleware(self, cliente_socket):
@@ -51,10 +68,9 @@ class Middleware:
             
             if not msg:
                 break
-
-            print(f'{self.nome_estacao} recebeu: {msg}')
+            
             self.processar_comando(msg,cliente_socket)
-        cliente_socket.close()
+        # cliente_socket.close()
     
     
     def processar_comando(self, comando, cliente_socket):
@@ -63,14 +79,150 @@ class Middleware:
         if not partes:
             return
         codigo = partes[0].upper()
-        if codigo == "CONEXÃO":
-            self.conectar_a_estacao_referencia(partes[1], partes[2], int(partes[3]))
-        elif codigo == "VAGAS":
-            info_vagas = self.processar_vagas()
-            if info_vagas:
-                resposta = str(info_vagas)
-                cliente_socket.sendall(resposta.encode('utf-8'))
+        if codigo == "ATIVAR":
+            print(f'Middleware {self.nome_estacao} recebeu: {comando}')
+
+            resposta = self.ativar()
+            cliente_socket.sendall(resposta.encode('utf-8'))
         
+        elif self.ativa:
+            
+            print(f'Middleware {self.nome_estacao} recebeu: {comando}')
+            if codigo == "CONEXÃO":
+                self.conectar_a_estacao_referencia(partes[1], partes[2], int(partes[3]))
+                resposta = "Conexão estabelecida"
+                cliente_socket.sendall(resposta.encode('utf-8'))
+            
+            elif codigo == "ALOCAÇÃO":
+                resposta = self.enviar_mensagem_app(f'ALOCAÇÃO {partes[1]}')
+            
+            elif codigo == "VAGAS":
+                # `partes[1]` representa a origem da solicitação
+                info_vagas = self.processar_vagas()
+                if info_vagas:
+                    resposta = str(info_vagas)
+                    cliente_socket.sendall(resposta.encode('utf-8'))
+
+                    
+            elif codigo == "SOLICITO":
+                id_carro = partes[1]
+                resposta = self.requisitar_vaga(id_carro)
+                cliente_socket.sendall(resposta.encode('utf-8'))
+            
+            elif codigo == "LIBERAR":
+                id_carro = partes[1]
+                resposta = self.liberar_vaga(id_carro)
+                cliente_socket.sendall(resposta.encode('utf-8'))
+            
+            elif codigo == "FECHAR":
+                self.ativa = False
+                resposta = (f'{self.nome_estacao} desativada')
+                cliente_socket.sendall(resposta.encode('utf-8'))
+            
+            elif codigo == "PING":
+                self.lidar_ping(partes[1])
+                
+            elif codigo == "TROCAR":
+                
+                if partes[1] == "conexão":
+                    if partes[2] == "None":
+                        self.estacao_conectada = None
+                    else:
+                        match = re.search(r"\(([^)]+)\)", comando)
+                        if match:
+                            # Separando os elementos para criar a tupla
+                            elementos = match.group(1).replace("'", "").split(", ")
+                            estacao_conectada = (elementos[0], elementos[1], int(elementos[2]))
+                            
+                        self.estacao_conectada = estacao_conectada
+                    
+                elif partes[1] == "referência":
+                    if partes[2] == "None":
+                        self.estacao_referencia = None
+                    else:
+                    
+                        match = re.search(r"\(([^)]+)\)", comando)
+                        if match:
+                            # Separando os elementos para criar a tupla
+                            elementos = match.group(1).replace("'", "").split(", ")
+                            estacao_conectada = (elementos[0], elementos[1], int(elementos[2]))
+                            
+                        self.estacao_referencia = estacao_conectada
+                            
+            elif codigo == "ELEICAO":
+                
+                resposta = self.enviar_mensagem_app(f'VAGAS')
+                resposta = 'VAGAS ' + resposta + " " + self.nome_estacao
+                cliente_socket.sendall(resposta.encode('utf-8'))
+                
+            elif codigo == "GERENTE":
+                if partes[1] == "Estacionado":
+                    resposta = self.enviar_mensagem_gerente(f'Estacionado {self.nome_estacao} {partes[2]}')
+                    cliente_socket.sendall(resposta.encode('utf-8'))
+                    
+                elif partes[1] == "Saida":
+                    resposta = self.enviar_mensagem_gerente(f'Saida {self.nome_estacao} {partes[2]}')
+                    cliente_socket.sendall(resposta.encode('utf-8'))
+                
+                elif partes[1] == "Alocação":
+                    
+                    resposta = self.enviar_mensagem_app(f'Atualizar {partes[2]} {partes[3]} {partes[4]}')
+                    cliente_socket.sendall(resposta.encode('utf-8'))
+    
+    def enviar_mensagem_app(self, mensagem):
+        """ Função genérica para enviar uma mensagem ao App via TCP """
+        try: 
+            cliente_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            cliente_socket.connect((self.ip, self.porta_app))
+            cliente_socket.sendall(mensagem.encode('utf-8'))
+
+            resposta = cliente_socket.recv(1024).decode('utf-8')
+            
+            return resposta
+
+        except socket.error as e:
+            print(f"Erro ao se conectar ao middleware: {e}")
+            time.sleep(2)
+        # finally:
+        #     cliente_socket.close()
+        
+    def enviar_mensagem_gerente(self, mensagem):
+        """ Função genérica para enviar uma mensagem ao Gerente via TCP """
+        try:
+            cliente_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            cliente_socket.connect((self.gerente_ip, self.gerente_porta))
+            cliente_socket.sendall(mensagem.encode('utf-8'))
+            
+            resposta = cliente_socket.recv(1024).decode('utf-8')
+            
+            return resposta
+
+        except socket.error as e:
+            print(f"Erro ao se conectar ao gerente: {e}")
+            return None
+        # finally:
+        #     cliente_socket.close()
+    
+    def enviar_mensagem_middleware(self, ip, porta, mensagem):
+        """ Função genérica para enviar uma mensagem a outro Middleware via TCP """
+        try:
+            cliente_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            cliente_socket.settimeout(10)
+            cliente_socket.connect((ip, porta))
+            cliente_socket.sendall(mensagem.encode('utf-8'))
+            
+            resposta = cliente_socket.recv(1024).decode('utf-8')
+            # cliente_socket.close()
+            
+            return resposta
+
+        except socket.error as e:
+            print(f"Erro ao se conectar ao middleware: {e}")
+            return None
+        # finally:
+        #     cliente_socket.close()
+        
+    
     def conectar_a_estacao_referencia(self, nome, ip, porta):
         """ Conecta a estação ativa de referência """
         self.estacao_conectada = (nome, ip, porta)
@@ -80,48 +232,45 @@ class Middleware:
     def conectar_ao_gerente(self):
         """ Conecta ao Gerente e envia a porta correta do App """
         try:
-            gerente_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            gerente_socket.connect((self.gerente_ip, self.gerente_porta))
+            # gerente_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # gerente_socket.connect((self.gerente_ip, self.gerente_porta))
             
-            # Envia o nome da estação e a porta correta do App para o Gerente
-            gerente_socket.sendall(f'Conexão {self.nome_estacao} {self.porta_middleware}'.encode('utf-8'))
-            resposta = gerente_socket.recv(1024).decode('utf-8')
-            print(f'Resposta do gerente: {resposta}')
-
+            mensagem = f'Conexão {self.nome_estacao} {self.porta_middleware}'
+            resposta = self.enviar_mensagem_gerente(mensagem)
+            # Envia o nome da estação e a porta correta do App par
+            # a o Gerente
+            # resposta = gerente_socket.recv(1024).decode('utf-8')
+            
             # Se a resposta for uma instrução de conexão a outra estação:
             if "Conexão:" in resposta:
+    
                 partes = resposta.split()
-                self.estacao_referencia = (partes[1], partes[2], int(partes[3]))  # Nome, IP, Porta da estação
-                print(f'{self.nome_estacao} irá se conectar à estação {self.estacao_referencia[0]}')
-                self.send_connection_request()
+                
+
+                print(f'{self.nome_estacao} irá se conectar à estação {partes[1]}')
+                mensagem = f'Conexão {self.nome_estacao} {self.ip} {self.porta_middleware}'
+                resposta = self.enviar_mensagem_middleware(partes[2], int(partes[3]), mensagem)
+                
+                print(f'Resposta da estação de referência: {resposta}')
+                
+                while resposta != "Conexão estabelecida": 
+                    time.sleep(1)    
+                    
+                self.estacao_referencia = (partes[1], partes[2], int(partes[3]))  # Nome, IP, Porta da estação               
+                     
             else:
                 # Caso seja a primeira estação, não há necessidade de conectar a outra estação.
                 print(f'{self.nome_estacao} é a primeira estação ativa.')
-
+                
             self.conectado = True
+            return True
         except Exception as e:
             print(f'Erro ao conectar ao gerente: {e}')
 
 
-    def send_connection_request(self):
-        """ Envia uma solicitação de conexão à estação de referência """
-        try:
-            estacao_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            estacao_socket.connect((self.estacao_referencia[1], self.estacao_referencia[2]))
-            estacao_socket.sendall(f'Conexão {self.nome_estacao} {self.ip} {self.porta_middleware}'.encode('utf-8'))
-            print(f'{self.nome_estacao} enviou solicitação de conexão a {self.estacao_referencia[0]}')
-            
-        except Exception as e:
-            print(f'Erro ao enviar solicitação de conexão: {e}')
-
-
-
     def processar_vagas(self):
         """ Processa e envia o número de vagas ocupadas e livres e propaga para outras estações """
-        if not self.ativa:
-            print(f'{self.nome_estacao} está inativa e não pode processar vagas.')
-            return
-        
+
         # Simula a recuperação de dados das vagas da estação.
         total_vagas = self.app.vagas_totais
         vagas_ocupadas = self.app.vagas_ocupadas
@@ -129,20 +278,19 @@ class Middleware:
 
         # Inicializa a lista de informações de vagas com os dados dessa estação.
         info_vagas = [(self.nome_estacao, total_vagas, vagas_ocupadas, vagas_livres)]
-        print(f'{self.nome_estacao} - Vagas ocupadas: {vagas_ocupadas}, Vagas livres: {vagas_livres}')
         
         # Conjunto de estações já processadas (para evitar duplicação)
         estacoes_processadas = {self.nome_estacao}  # Adiciona a própria estação no conjunto
 
         # Função interna para processar estações conectadas, evitando duplicatas
         def processar_estacao_conectada(nome_estacao, ip_estacao, porta_estacao):
+            if nome_estacao in estacoes_processadas:
+                return  # Se a estação já foi processada, retorna imediatamente
+            
             try:
-                estacao_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                estacao_socket.connect((ip_estacao, porta_estacao))
-                estacao_socket.sendall(f'Vagas {self.nome_estacao}'.encode('utf-8'))
-
-                # Recebe a resposta da estação conectada abaixo e agrega o resultado
-                resposta = estacao_socket.recv(1024).decode('utf-8')
+                mensagem = f'Vagas {self.nome_estacao}'
+                resposta = self.enviar_mensagem_middleware(ip_estacao, porta_estacao, mensagem)
+            
                 info_vagas_estacao = eval(resposta)  # Recebe a lista de tuplas com a info de vagas
 
                 # Agrega informações de vagas apenas de estações não processadas
@@ -152,18 +300,256 @@ class Middleware:
                         info_vagas.append(estacao)
                         estacoes_processadas.add(nome)
 
-                estacao_socket.close()
             except Exception as e:
                 print(f'Erro ao conectar e processar vagas da estação {nome_estacao}: {e}')
-        
+
         # Processa a estação de referência (se existir)
-        if self.estacao_referencia:
+        if self.estacao_referencia and self.estacao_referencia[0] not in estacoes_processadas:
             processar_estacao_conectada(self.estacao_referencia[0], self.estacao_referencia[1], self.estacao_referencia[2])
 
         # Processa a estação conectada abaixo (se existir)
-        if self.estacao_conectada:
+        if self.estacao_conectada and self.estacao_conectada[0] not in estacoes_processadas:
             processar_estacao_conectada(self.estacao_conectada[0], self.estacao_conectada[1], self.estacao_conectada[2])
 
-        # resposta_formatada = ', '.join([f'{nome}:{vagas_livres}-{vagas_ocupadas}' for nome, _, vagas_ocupadas, vagas_livres in info_vagas])
-        
         return info_vagas
+
+
+
+    def requisitar_vaga(self, id_carro):
+        """ Requisita uma vaga disponível na estação atual ou em outras estações """
+        # Verifica a própria estação primeiro
+        vagas_estacao = self.enviar_mensagem_app("VAGAS")
+        vagas_estacao = vagas_estacao.split("-")
+        total_vagas = int(vagas_estacao[0])
+        vagas_ocupadas = int(vagas_estacao[1])
+        vagas_livres = total_vagas - vagas_ocupadas
+        
+        # Se houver uma vaga livre, a preenche e retorna "OK"
+        if vagas_livres > 0:
+            resposta = self.enviar_mensagem_app(f'Estacionar {id_carro}')
+            
+            print(f'{self.nome_estacao} - Vaga alocada.')
+            return "OK"
+
+        # Se não houver vaga na própria estação, propaga a solicitação para outras estações conectadas
+        estacoes_processadas = {self.nome_estacao}  # Adiciona a própria estação no conjunto
+
+        def requisitar_de_estacao_conectada(nome_estacao, ip_estacao, porta_estacao):
+            try:
+                mensagem = f'SOLICITO {self.nome_estacao}'
+                resposta = self.enviar_mensagem_middleware(ip_estacao, porta_estacao, mensagem)
+                
+                if resposta == "OK":
+                    print(f'Vaga alocada na estação {nome_estacao}.')
+                    return "OK"
+            except Exception as e:
+                print(f'Erro ao conectar e requisitar vaga da estação {nome_estacao}: {e}')
+            
+            return None
+
+        # Verifica a estação de referência (se existir)
+        if self.estacao_referencia is not None:
+            resposta = requisitar_de_estacao_conectada(self.estacao_referencia[0], self.estacao_referencia[1], self.estacao_referencia[2])
+            if resposta == "OK":
+                return resposta
+
+        # Verifica a estação conectada abaixo (se existir)
+        if self.estacao_conectada is not None:
+            resposta = requisitar_de_estacao_conectada(self.estacao_conectada[0], self.estacao_conectada[1], self.estacao_conectada[2])
+            if resposta == "OK":
+                return resposta
+
+        # Se nenhuma vaga foi encontrada
+        return "SEM VAGAS"
+    
+    
+    
+    def liberar_vaga(self, id_carro):
+        """ Libera a vaga associada ao carro 'id_carro' na estação atual ou em outras estações conectadas """
+        
+        estacoes_processadas = {self.nome_estacao}  # Adiciona a própria estação ao conjunto de estações processadas
+
+        # Função interna para requisitar a liberação de vaga em outra estação
+        def liberar_em_estacao_conectada(nome_estacao, ip_estacao, porta_estacao):
+            # Evita processar a mesma estação mais de uma vez
+            if nome_estacao in estacoes_processadas:
+                return None
+            
+            estacoes_processadas.add(nome_estacao)  # Marca a estação como processada
+
+            try:
+                mensagem = f'LIBERAR {id_carro}'
+                resposta = self.enviar_mensagem_middleware(ip_estacao, porta_estacao, mensagem)
+        
+                if resposta == "Vaga liberada":
+                    return "Vaga liberada"
+            except Exception as e:
+                print(f'Erro ao conectar e liberar vaga da estação {nome_estacao}: {e}')
+
+            return None
+
+        # Primeiro, tenta liberar a vaga na própria estação
+        resposta = self.enviar_mensagem_app(f'ESTACIONADO {id_carro}')
+        if resposta == "Saiu":
+            return "Vaga liberada"
+
+        # Verifica a estação de referência (se existir e ainda não foi processada)
+        if self.estacao_referencia is not None and self.estacao_referencia[0] not in estacoes_processadas:
+            resposta = liberar_em_estacao_conectada(self.estacao_referencia[0], self.estacao_referencia[1], self.estacao_referencia[2])
+            if resposta == "Vaga liberada":
+                return resposta
+
+        # Verifica a estação conectada abaixo (se existir e ainda não foi processada)
+        if self.estacao_conectada is not None and self.estacao_conectada[0] not in estacoes_processadas:
+            resposta = liberar_em_estacao_conectada(self.estacao_conectada[0], self.estacao_conectada[1], self.estacao_conectada[2])
+            if resposta == "Vaga liberada":
+                return resposta
+
+        # Se o carro não foi encontrado em nenhuma estação
+        return "CARRO NÃO ENCONTRADO"
+
+
+
+    def send_ping(self, station_address):
+        """Envia um ping para uma estação específica via TCP."""
+        try:
+            station_address_ip_porta = (station_address[1], station_address[2])
+            message = f"ping {self.nome_estacao}".encode('utf-8')  # Formato da mensagem com nome da estação
+
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(2)
+                s.connect(station_address_ip_porta)  # Conecta ao IP e porta da estação
+                
+                s.sendall(message)  # Envia a mensagem
+                
+        except Exception as e:
+            print(f"Erro ao enviar ping para {station_address_ip_porta}: {e}")
+
+
+    def lidar_ping(self, station_name):
+        """Lida com a conexão TCP recebida e processa o ping."""
+        try:            
+            if self.estacao_referencia is not None:
+                if station_name == self.estacao_referencia[0]:
+                    self.ultima_vez_heartbeat_referencia = time.time()
+            
+            if self.estacao_conectada is not None:
+                if station_name == self.estacao_conectada[0]:
+                    self.ultima_vez_heartbeat_conectada = time.time()
+                    
+        except Exception as e:
+            print(f"Erro ao lidar com cliente: {e}")
+
+
+    def monitor_heartbeat(self):
+        """Monitora se as estações conectadas ou referenciadas continuam enviando pings."""
+        while self.ativa:
+            agora = time.time()
+
+            # Verifica se a estação de referência parou de enviar pings
+            if self.estacao_referencia is not None and agora - self.ultima_vez_heartbeat_referencia > TIMEOUT_INTERVAL:
+                print(f"{self.nome_estacao} detectou que a estação de referência {self.estacao_referencia[0]} está offline.")
+                self.detectar_falha(self.estacao_referencia[0])
+
+            # Verifica se a estação conectada parou de enviar pings
+            if self.estacao_conectada is not None and agora - self.ultima_vez_heartbeat_conectada > TIMEOUT_INTERVAL:
+                print(f"{self.nome_estacao} detectou que a estação conectada {self.estacao_conectada[0]} está offline.")
+                self.detectar_falha(self.estacao_conectada[0])
+            
+            time.sleep(PING_INTERVAL) 
+                
+    def heartbeat(self):
+        """Controla o envio de pings para as estações conectadas e referenciadas via TCP."""
+        while self.ativa:
+            if self.estacao_referencia is not None:
+                self.send_ping(self.estacao_referencia)
+            if self.estacao_conectada is not None:
+                self.send_ping(self.estacao_conectada)
+
+            
+            time.sleep(PING_INTERVAL)  # Espera antes de enviar o próximo ping
+
+
+
+    def detectar_falha(self, estacao_nome):
+        """Inicia o processo de eleição ao detectar que uma estação está offline."""
+        print(f"{self.nome_estacao} detectou que a estação {estacao_nome} está offline. Iniciando processo de eleição...")
+        resposta = self.enviar_mensagem_gerente(f"Desativar {estacao_nome}")
+        print(f"Resposta do gerente: {resposta}")
+        while not resposta:
+            time.sleep(1)
+        
+        partes = resposta.split()
+                
+        vagas = int(partes[0])
+        # vagas_ocupadas = int(partes[1])
+        # carros_estacionados = partes[2:]
+
+        # threading.Thread(target=self.iniciar_eleicao, args=(vagas,)).start()
+        self.iniciar_eleicao(vagas)
+
+
+    # def iniciar_eleicao(self, vagas, vagas_ocupadas,carros_estacionados):
+    def iniciar_eleicao(self, vagas):
+        
+        """Inicia o processo de eleição baseado na estação com menos vagas livres."""
+        print(f"{self.nome_estacao} está iniciando uma eleição.")
+        
+        # Obtém o número de vagas livres da estação atual
+        vagas_estacao = self.enviar_mensagem_app("VAGAS")
+        vagas_estacao = vagas_estacao.split("-")
+        vagas_livres = int(vagas_estacao[0]) - int(vagas_estacao[1])
+        
+        estacao_mais_forte = (self.nome_estacao, vagas_livres)
+
+        # Conjunto de estações já processadas (para evitar loops)
+        estacoes_processadas = {self.nome_estacao}
+        
+        def processar_eleicao(nome_estacao, ip_estacao, porta_estacao):
+            """Propaga a eleição para as estações conectadas ou referenciadas."""
+            nonlocal estacao_mais_forte
+            try:
+                mensagem = f'ELEICAO {self.nome_estacao}'
+                resposta = self.enviar_mensagem_middleware(ip_estacao, porta_estacao, mensagem)
+                
+                if resposta.startswith("VAGAS"):
+                    
+                    partes = resposta.split()
+                    
+                    vagas_totais, vagas_ocupadas = partes[1].split('-')
+
+                    # Pegando o nome da estação
+                    nome_estacao_resposta = partes[2]
+
+                    vagas_livres_resposta = int(vagas_totais) - int(vagas_ocupadas)
+                    
+                    
+                    # Atualiza a estação mais forte com base no menor número de vagas livres
+                    if vagas_livres_resposta < estacao_mais_forte[1]:
+                        estacao_mais_forte = (nome_estacao_resposta, vagas_livres_resposta)
+                        
+                    estacoes_processadas.add(nome_estacao_resposta)
+
+            except Exception as e:
+                print(f"Erro ao enviar mensagem de eleição para {nome_estacao}: {e}")
+            
+        # Propaga a eleição para a estação de referência (se existir e não processada)
+        if self.estacao_referencia is not None and self.estacao_referencia[0] not in estacoes_processadas:
+            processar_eleicao(self.estacao_referencia[0], self.estacao_referencia[1], self.estacao_referencia[2])
+            
+        # Propaga a eleição para a estação conectada (se existir e não processada)
+        if self.estacao_conectada is not None and self.estacao_conectada[0] not in estacoes_processadas:
+            processar_eleicao(self.estacao_conectada[0], self.estacao_conectada[1], self.estacao_conectada[2])
+        
+        # A estação com menos vagas livres é declarada como líder
+        lider = estacao_mais_forte[0]
+        print(f"{lider} foi eleita como a estação mais forte com {estacao_mais_forte[1]} vagas livres.")
+        self.assumir_vagas(lider, vagas)
+
+    
+    # def assumir_vagas(self, lider, vagas, vagas_ocupadas,carros_estacionados):
+    def assumir_vagas(self, lider, vagas):
+        """Assume as vagas da estação que saiu ou ficou offline."""
+        print(f"{lider} está assumindo as vagas da estação.")
+        self.enviar_mensagem_gerente(f"Eleição {lider} {vagas}")
+        pass

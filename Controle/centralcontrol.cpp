@@ -23,7 +23,7 @@ void CentralControl::readCommandFromFile(string cmdFile){
    // display each record in file
    while (inCommandFile >> command >> destination) {
     std::cout << "Processing command: " << command << " station: " << destination <<  std::endl;
-     this->handleCommand(command, CentralControl::getIpAddress(destination), CentralControl::getPort(destination));
+     this->handleCommand(command, CentralControl::getIpAddress(destination), CentralControl::getPort(destination), destination);
    }
      // Join the threads with the main thread
     for (auto& thread : newThread) {
@@ -33,7 +33,7 @@ void CentralControl::readCommandFromFile(string cmdFile){
     }
 }
 
-void CentralControl::handleCommand(string cmd, string dest_IP, int dest_Port){
+void CentralControl::handleCommand(string cmd, string dest_IP, int dest_Port, int destination){
 
     string response;
     if (cmd == "RV") {
@@ -47,7 +47,23 @@ void CentralControl::handleCommand(string cmd, string dest_IP, int dest_Port){
 
         //criar a thread carro o "LV" será enviado pelo carro
         
-    } else if ((cmd == "AE") || (cmd == "FE") || (cmd == "VD") || (cmd =="ST")) {
+    } else if (cmd == "AE"){
+
+        actNumber++;
+        status[destination-1]='1';
+        //thread.emplace_back(actFunction, dest_IP, dest_Port, cmd);
+        response = Communication::actFunction( dest_IP, dest_Port, cmd);
+        std::cout << "Resuming the process..." << std::endl;
+
+    } else if (cmd == "FE"){
+        
+        actNumber++;
+        status[destination-1]='0';
+        //thread.emplace_back(actFunction, dest_IP, dest_Port, cmd);
+        response = Communication::actFunction( dest_IP, dest_Port, cmd);
+
+    }
+      else if ((cmd == "VD") || (cmd =="ST")) {
         actNumber++;
         //thread.emplace_back(actFunction, dest_IP, dest_Port, cmd);
         
@@ -105,8 +121,9 @@ void CentralControl::selectExit(string& station, string&  addr, int * p){
 
     // Generate a index
     int ind = dist(gen);
-    while (status[ind]==0){
+    while (status[ind]=='0'){
         ind = dist(gen);
+
     }
     station = name[ind];
     addr = ipaddress[ind];
