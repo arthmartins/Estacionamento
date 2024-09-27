@@ -62,7 +62,8 @@ class App:
 
     def processar_comando(self, comando, cliente_socket):
         """ Função para processar os comandos recebidos via TCP """
-    
+        retries = 2
+        num = 0
         partes = comando.strip().split()
         fila_de_espera = []
         comando_processado = False
@@ -81,7 +82,7 @@ class App:
             print(f'App {self.nome} recebeu: {comando}')
 
             if codigo == "VD":
-                vagas = self.enviar_mensagem_middleware(f'Vagas')
+                vagas = self.enviar_mensagem_middleware(f'Vagas {self.nome}')
                 vagas = eval(vagas)
                 # tem que vir na resposta todas as vagas
                 resposta = ""
@@ -99,16 +100,19 @@ class App:
                 fila_de_espera.append(id_carro)
                 
                 while fila_de_espera:
-                
+                   
                     # Protege a verificação e alteração de vagas com o Lock
                     if self.vagas_ocupadas < self.vagas_totais:
-                        with self.lock:
-                            fila_de_espera.pop(0)
-                            self.carros_estacionados.append(id_carro)
-                            self.vagas_ocupadas += 1
-                            
-                            resposta = (f'OK')
-                            cliente_socket.sendall(resposta.encode('utf-8'))
+                        
+                        fila_de_espera.pop(0)
+                        self.carros_estacionados.append(id_carro)
+                        self.vagas_ocupadas += 1
+                        
+                        msg_middleware = f'Gerente Estacionado {id_carro}'
+                        _ = self.enviar_mensagem_middleware(msg_middleware) # Mensagem para registrar carro no gerente
+                        
+                        resposta = (f'OK')
+                        cliente_socket.sendall(resposta.encode('utf-8'))
                     else:
                         # Usar a vaga de outra estação atraves do middleware
                         resposta = self.enviar_mensagem_middleware(f'Solicito {id_carro}')
@@ -120,17 +124,31 @@ class App:
                     
             elif "LV" in codigo:
                 id_carro = codigo.split('.')[1]
-                
-                if id_carro in self.carros_estacionados:
-                    self.carros_estacionados.remove(id_carro)
-                    self.vagas_ocupadas -= 1
+            
+                while num < retries:
                     
-                    resposta = (f'Vaga liberada')
+                    if id_carro in self.carros_estacionados:
+                        self.carros_estacionados.remove(id_carro)
+                        self.vagas_ocupadas -= 1
+                        
+                        msg_middleware = f'Gerente Saida {id_carro}'
+                        _ = self.enviar_mensagem_middleware(msg_middleware)
+                        
+                        resposta = (f'Vaga liberada {id_carro}')
+                        cliente_socket.sendall(resposta.encode('utf-8'))
+                        break
+                    else:
+                        resposta = self.enviar_mensagem_middleware(f'Liberar {id_carro}')
+                        if resposta == "CARRO NÃO ENCONTRADO":
+                            num += 1
+                            continue
+                        
+                        resposta = resposta + " " + id_carro
+                        cliente_socket.sendall(resposta.encode('utf-8'))
+                    comando_processado = True
+                    resposta = (f'Carro não encontrado {id_carro}')
                     cliente_socket.sendall(resposta.encode('utf-8'))
-                else:
-                    resposta = self.enviar_mensagem_middleware(f'Liberar {id_carro}')
-                    cliente_socket.sendall(resposta.encode('utf-8'))
-                comando_processado = True
+                
                 
             elif "FE" in codigo:
                 
@@ -152,8 +170,8 @@ class App:
                 self.carros_estacionados.append(partes[1])
                 self.vagas_ocupadas += 1
                 
-                # msg_middleware = f'Gerente Estacionado {id_carro}'
-                # resposta_ger = self.enviar_mensagem_middleware(msg_middleware) # Mensagem para registrar carro no gerente
+                msg_middleware = f'Gerente Estacionado {id_carro}'
+                resposta_ger = self.enviar_mensagem_middleware(msg_middleware) # Mensagem para registrar carro no gerente
                 
                 resposta = (f'Estacionou')
                 cliente_socket.sendall(resposta.encode('utf-8'))
@@ -168,8 +186,8 @@ class App:
                     self.carros_estacionados.remove(id_carro)
                     self.vagas_ocupadas -= 1
                     
-                    # msg_middleware = f'Gerente Saida {id_carro}'
-                    # _ = self.enviar_mensagem_middleware(msg_middleware)
+                    msg_middleware = f'Gerente Saida {id_carro}'
+                    _ = self.enviar_mensagem_middleware(msg_middleware)
                     
                     resposta = (f'Saiu')
                     cliente_socket.sendall(resposta.encode('utf-8'))
@@ -189,23 +207,18 @@ class App:
                 self.vagas_totais = int(partes[1])
                 self.vagas_ocupadas = int(partes[2])
                 
-                carros = partes[3:]
-                carros_str = str(carros)
-
-                matches = re.findall(r'"([^"]+)"', carros_str)
-
-                # Faz o append de cada elemento extraído, removendo colchetes extras
-                for match in matches:
-                    # Remove os colchetes iniciais e finais, caso existam
-                    cleaned_match = match.strip("[]")
-                    self.carros_estacionados.append(cleaned_match)
+                carros = partes[3]
+                id_carros = carros.split('.')
+                
+                for id_carro in id_carros:
+                    self.carros_estacionados.append(id_carro)
                 
                 resposta = (f'Atualizado')
                 cliente_socket.sendall(resposta.encode('utf-8'))
                 
                 comando_processado = True
         else:
-            resposta = (f'Estação {self.nome} não está ativa.')
+            resposta = (f'Estação {self.nome} não está ativa comando perdido {comando}.')
             cliente_socket.sendall(resposta.encode('utf-8'))
             comando_processado = True
         
