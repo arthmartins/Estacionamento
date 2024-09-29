@@ -162,10 +162,14 @@ class Middleware:
                         self.estacao_referencia = estacao_conectada
                             
             elif codigo == "ELEICAO":
-                
-                resposta = self.enviar_mensagem_app(f'VAGAS')
-                resposta = 'VAGAS ' + resposta + " " + self.nome_estacao
-                cliente_socket.sendall(resposta.encode('utf-8'))
+                print(f"Processando eleiicao para {self.nome_estacao}")
+                origem = partes[1]
+                estacoes_processadas = {origem}
+            
+                info_vagas = self.processar_eleicao(origem, estacoes_processadas)
+                if info_vagas:
+                    resposta = str(info_vagas)
+                    cliente_socket.sendall(resposta.encode('utf-8'))
                 
             elif codigo == "GERENTE":
                 if partes[1] == "Estacionado":
@@ -504,65 +508,94 @@ class Middleware:
         if carros_estacionados == '':
             carros_estacionados = 'None'
         
-        # threading.Thread(target=self.iniciar_eleicao, args=(vagas,)).start()
-        self.iniciar_eleicao(vagas,vagas_ocupadas,carros_estacionados)
+        lista_vagas = self.enviar_mensagem_middleware(self.estacao_referencia[1], self.estacao_referencia[2], f'Eleicao {self.estacao_referencia[0]}')
+        lider, vagas_livres = self.encontrar_estacao_com_menos_vagas(lista_vagas)
+        
+        self.assumir_vagas(lider, vagas, vagas_ocupadas, carros_estacionados)
 
 
-    def iniciar_eleicao(self, vagas, vagas_ocupadas,carros_estacionados):
+    def encontrar_estacao_com_menos_vagas(self, lista_vagas):
+        """ Processa a lista de vagas e encontra a estação com o menor número de vagas livres """
         
-        """Inicia o processo de eleição baseado na estação com menos vagas livres."""
-        print(f"{self.nome_estacao} está iniciando uma eleição.")
+        # Converte a string recebida em uma lista de tuplas
+        try:
+            vagas_info = eval(lista_vagas)
+        except Exception as e:
+            print(f"Erro ao processar a lista de vagas: {e}")
+            return None
+
+        estacao_menor_vaga = min(vagas_info, key=lambda x: x[1])
         
-        # Obtém o número de vagas livres da estação atual
+        nome_estacao = estacao_menor_vaga[0]
+        vagas_livres = estacao_menor_vaga[1]
+
+        print(f"Estação {nome_estacao} possui o menor número de vagas livres: {vagas_livres}")
+
+        return nome_estacao, vagas_livres
+    
+
+    def processar_eleicao(self, origem=None, estacoes_processadas=None):
+        """ Processa e envia o número de vagas livres para todas as estações na fila circular """
+
+        # Define a origem da solicitação, se não for fornecida
+        if origem is None:
+            origem = self.nome_estacao
+
+        # Inicializa o conjunto de estações processadas, se não fornecido
+        if estacoes_processadas is None:
+            estacoes_processadas = {self.nome_estacao}
+
+        # Simula a recuperação de dados das vagas da estação atual.
         vagas_estacao = self.enviar_mensagem_app("VAGAS")
         vagas_estacao = vagas_estacao.split("-")
-        vagas_livres = int(vagas_estacao[0]) - int(vagas_estacao[1])
-        
-        estacao_mais_forte = (self.nome_estacao, vagas_livres)
+        total_vagas = int(vagas_estacao[0])
+        vagas_ocupadas = int(vagas_estacao[1])
+        vagas_livres = total_vagas - vagas_ocupadas
 
-        # Conjunto de estações já processadas (para evitar loops)
-        estacoes_processadas = {self.nome_estacao}
-        
-        def processar_eleicao(nome_estacao, ip_estacao, porta_estacao):
-            """Propaga a eleição para as estações conectadas ou referenciadas."""
-            nonlocal estacao_mais_forte
+        # Inicializa a lista de informações de vagas livres com os dados dessa estação.
+        vagas_info = [(self.nome_estacao, vagas_livres)]
+
+        # Adiciona a estação atual ao conjunto de processadas
+        estacoes_processadas.add(self.nome_estacao)
+
+        # Inicia o processamento a partir da estação de referência
+        estacao_atual = self.estacao_referencia
+
+        # Percorre a fila circular até retornar à estação original
+        while estacao_atual and estacao_atual[0] != origem:
+            nome_estacao = estacao_atual[0]
+            ip_estacao = estacao_atual[1]
+            porta_estacao = estacao_atual[2]
+
+            if nome_estacao in estacoes_processadas:
+                # Se já foi processada, interrompe o loop para evitar redundância
+                break
+
             try:
-                mensagem = f'ELEICAO {self.nome_estacao}'
+                # Envia mensagem para a estação de referência solicitando as vagas
+                mensagem = f'Eleicao {origem}'
                 resposta = self.enviar_mensagem_middleware(ip_estacao, porta_estacao, mensagem)
+
+                # Recebe a lista de tuplas com a info de vagas e converte
+                info_vagas_estacao = eval(resposta)
                 
-                if resposta.startswith("VAGAS"):
-                    
-                    partes = resposta.split()
-                    
-                    vagas_totais, vagas_ocupadas = partes[1].split('-')
+                # Adiciona informações de vagas livres da estação não processada
+                for estacao in info_vagas_estacao:
+                    nome = estacao[0]
+                    vagas_livres_estacao = int(estacao[1])  # Index 3 corresponde ao número de vagas livres
+                    if nome not in estacoes_processadas:
+                        vagas_info.append((nome, vagas_livres_estacao))
+                        estacoes_processadas.add(nome)
 
-                    # Pegando o nome da estação
-                    nome_estacao_resposta = partes[2]
-
-                    vagas_livres_resposta = int(vagas_totais) - int(vagas_ocupadas)
-                    
-                    
-                    # Atualiza a estação mais forte com base no menor número de vagas livres
-                    if vagas_livres_resposta < estacao_mais_forte[1]:
-                        estacao_mais_forte = (nome_estacao_resposta, vagas_livres_resposta)
-                        
-                    estacoes_processadas.add(nome_estacao_resposta)
+                # Atualiza a estação atual para a próxima na fila circular
+                estacao_atual = (info_vagas_estacao[-1][0], ip_estacao, porta_estacao)
 
             except Exception as e:
-                print(f"Erro ao enviar mensagem de eleição para {nome_estacao}: {e}")
-            
-        # Propaga a eleição para a estação de referência (se existir e não processada)
-        if self.estacao_referencia is not None and self.estacao_referencia[0] not in estacoes_processadas:
-            processar_eleicao(self.estacao_referencia[0], self.estacao_referencia[1], self.estacao_referencia[2])
-            
-        # Propaga a eleição para a estação conectada (se existir e não processada)
-        if self.estacao_conectada is not None and self.estacao_conectada[0] not in estacoes_processadas:
-            processar_eleicao(self.estacao_conectada[0], self.estacao_conectada[1], self.estacao_conectada[2])
-        
-        # A estação com menos vagas livres é declarada como líder
-        lider = estacao_mais_forte[0]
-        print(f"{lider} foi eleita como a estação mais forte com {estacao_mais_forte[1]} vagas livres.")
-        self.assumir_vagas(lider, vagas, vagas_ocupadas,carros_estacionados)
+                print(f'Erro ao conectar e processar vagas da estação {nome_estacao}: {e}')
+                break
+
+        return vagas_info
+
 
     
     # def assumir_vagas(self, lider, vagas, vagas_ocupadas,carros_estacionados):

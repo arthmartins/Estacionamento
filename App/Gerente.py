@@ -7,7 +7,7 @@ class Gerente:
     def __init__(self, ip, porta):
         self.ip = ip
         self.porta = porta
-        self.vagas_estacionamento = 20
+        self.vagas_estacionamento = 50
         self.estacoes_ativas = {}
         self.estacao_vagas = {}
         self.conexoes = {}
@@ -51,6 +51,7 @@ class Gerente:
                     
            
             if partes[0] == "Desativar":
+        
                 nome_estacao = partes[1]
                 if nome_estacao in self.estacoes_ativas:
                     
@@ -105,7 +106,7 @@ class Gerente:
                     # mensagem = f'{vagas} {vagas_ocupadas} {carros}'
                     mensagem = f'{vagas} {vagas_ocupadas} {carros}'
                     cliente_socket.sendall(mensagem.encode('utf-8'))
-
+           
                 else:
                     print(f'Estação {nome_estacao} não está ativa.')      
             
