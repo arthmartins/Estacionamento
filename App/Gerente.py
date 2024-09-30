@@ -7,7 +7,7 @@ class Gerente:
     def __init__(self, ip, porta):
         self.ip = ip
         self.porta = porta
-        self.vagas_estacionamento = 5
+        self.vagas_estacionamento = 2
         self.estacoes_ativas = {}
         
         self.estacao_vagas = {} 
@@ -15,7 +15,6 @@ class Gerente:
         self.vagas_ocupadas = {}
         self.id_carros = {}
         
-        self.estacao_index = 0  # Índice para garantir balanceamento das conexões
 
     def iniciar(self):
         servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -170,17 +169,35 @@ class Gerente:
         estacoes_lista = list(self.estacoes_ativas.keys())
 
         if len(estacoes_lista) > 1:
-            self.conexoes.clear()  # Limpa as conexões atuais
+            # self.conexoes.clear()  # Limpa as conexões atuais
+            ultima_posicao = len(estacoes_lista) - 1
+            estacao_atual = estacoes_lista[ultima_posicao-1]
+            proxima_estacao = estacoes_lista[ultima_posicao]
             
-            for i in range(len(estacoes_lista)):
-                estacao_atual = estacoes_lista[i]
-                proxima_estacao = estacoes_lista[(i + 1) % len(estacoes_lista)]
+            ip, porta = self.estacoes_ativas[proxima_estacao]
+            self.conexoes[estacao_atual] = (proxima_estacao, ip, porta)
+            
+            mensagem = f'Conexão {proxima_estacao} {ip} {porta}'
+            self.enviar_mensagem_estacao(estacao_atual, mensagem)
+            
+            
+            estacao_atual = estacoes_lista[ultima_posicao]
+            proxima_estacao = estacoes_lista[0]
+            ip, porta = self.estacoes_ativas[proxima_estacao]
+            self.conexoes[estacao_atual] = (proxima_estacao, ip, porta)
+            
+            mensagem = f'Conexão {proxima_estacao} {ip} {porta}'
+            self.enviar_mensagem_estacao(estacao_atual, mensagem)
+            
+            # for i in range(len(estacoes_lista)):
+            #     estacao_atual = estacoes_lista[i]
+            #     proxima_estacao = estacoes_lista[(i + 1) % len(estacoes_lista)]
                 
-                ip, porta = self.estacoes_ativas[proxima_estacao]
-                self.conexoes[estacao_atual] = (proxima_estacao, ip, porta)
+            #     ip, porta = self.estacoes_ativas[proxima_estacao]
+            #     self.conexoes[estacao_atual] = (proxima_estacao, ip, porta)
                 
-                mensagem = f'Conexão {proxima_estacao} {ip} {porta}'
-                self.enviar_mensagem_estacao(estacao_atual, mensagem)
+            #     mensagem = f'Conexão {proxima_estacao} {ip} {porta}'
+            #     self.enviar_mensagem_estacao(estacao_atual, mensagem)
             
 
     def encontrar_estacao_x(self, nome_estacao):
@@ -193,18 +210,25 @@ class Gerente:
 
         return None  # Caso nenhuma estação esteja referenciando `nome_estacao`
 
+    
     def distribuir_vagas(self):
-        """ Distribui as vagas de forma aleatória entre todas as estações ativas """
+        """ Distribui as vagas livres restantes de forma aleatória entre todas as estações ativas """
+        # Calcula o número total de vagas livres disponíveis no estacionamento
+        vagas_livres = self.vagas_estacionamento - sum(self.vagas_ocupadas.values())
+            
         if len(self.estacoes_ativas) > 0:
             vagas_por_estacao = [0] * len(self.estacoes_ativas)
-
-            for _ in range(self.vagas_estacionamento):
+            
+            # Distribui as vagas livres restantes de forma aleatória
+            for _ in range(vagas_livres):
                 estacao_escolhida = random.randint(0, len(self.estacoes_ativas) - 1)
                 vagas_por_estacao[estacao_escolhida] += 1
 
             for i, (nome_estacao, _) in enumerate(self.estacoes_ativas.items()):
-                self.estacao_vagas[nome_estacao] = vagas_por_estacao[i]
-                print(f'Estação {nome_estacao} recebeu {vagas_por_estacao[i]} vagas.')
+                # Adiciona as vagas distribuídas aleatoriamente às vagas já atribuídas
+                self.estacao_vagas[nome_estacao] = self.vagas_ocupadas.get(nome_estacao, 0) + vagas_por_estacao[i]
+                print(f'Estação {nome_estacao} recebeu {vagas_por_estacao[i]} vagas livres restantes.')
+
 
 
     def informar_vagas_estacoes(self):
@@ -246,16 +270,6 @@ class Gerente:
         
         print(f'Estação {nome} registrada {porta} como ativa no Gerente.')
         
-
-    def selecionar_proxima_estacao(self):
-        """ Seleciona a próxima estação ativa de forma balanceada (round-robin) """
-        estacoes_lista = list(self.estacoes_ativas.items())
-
-        # Seleciona a próxima estação com base no índice
-        estacao_selecionada = estacoes_lista[self.estacao_index % len(estacoes_lista)]
-        self.estacao_index += 1  # Incrementa o índice para a próxima seleção
-
-        return estacao_selecionada
 
 def main():
     gerente_ip = "127.0.0.1"

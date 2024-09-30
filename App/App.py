@@ -17,7 +17,7 @@ class App:
         
         self.porta_middleware = int(f"1{porta}")
         
-        self.middleware = Middleware(self.nome, '127.0.0.1', 8080, self.porta_middleware, porta ,self)
+        self.middleware = Middleware(self.nome, '127.0.0.1', 8080, self.porta_middleware, porta)
         
         self.ativa = False
         self.carros_estacionados = []
@@ -71,7 +71,6 @@ class App:
         retries = 2
         num = 0
         fila_de_espera = []
-        comando_processado = False
         
         partes = comando.strip().split()
        
@@ -87,15 +86,14 @@ class App:
             resposta = (f'Estação {self.nome} ativada com sucesso! ')
             cliente_socket.sendall(resposta.encode('utf-8'))
             
-            comando_processado = True
         
         elif self.ativa:
-            
+
             print(f'App {self.nome} recebeu: {comando}')
 
             if codigo == "VD":
                 vagas = self.enviar_mensagem_middleware(f'Vagas {self.nome}')
-                
+                print(vagas)
                 # Tratamento da string de saida no formato do pdf
                 
                 vagas = eval(vagas)
@@ -107,7 +105,6 @@ class App:
                 resposta = resposta[:-2] + '.'
                 cliente_socket.sendall(resposta.encode('utf-8'))
                 
-                comando_processado = True
             
             
             elif "RV" in codigo:
@@ -132,7 +129,6 @@ class App:
                         resposta = (f'OK')
                         cliente_socket.sendall(resposta.encode('utf-8'))
                     else:
-                        
                         # Usar a vaga de outra estação atraves do middleware
                         resposta = self.enviar_mensagem_middleware(f'Solicito {id_carro}')
                         
@@ -140,7 +136,6 @@ class App:
                             fila_de_espera.pop(0)
                             cliente_socket.sendall(resposta.encode('utf-8'))
                             
-                comando_processado = True        
                     
     
             elif "LV" in codigo:
@@ -151,13 +146,15 @@ class App:
                     if id_carro in self.carros_estacionados:
                         self.carros_estacionados.remove(id_carro)
                         self.vagas_ocupadas -= 1
-                        
+
                         msg_middleware = f'Gerente Saida {id_carro}'
                         _ = self.enviar_mensagem_middleware(msg_middleware)
                         
                         resposta = (f'Vaga liberada {id_carro}')
                         cliente_socket.sendall(resposta.encode('utf-8'))
                         break
+                    
+                    # Nao esta nessa estação o carro
                     else:
                         resposta = self.enviar_mensagem_middleware(f'Liberar {id_carro}')
                         if resposta == "CARRO NÃO ENCONTRADO":
@@ -167,7 +164,6 @@ class App:
                             cliente_socket.sendall(resposta.encode('utf-8'))
                             break
                         
-                comando_processado = True
                 if resposta == "CARRO NÃO ENCONTRADO":
                     resposta = (f'Carro não encontrado {id_carro}')
                     cliente_socket.sendall(resposta.encode('utf-8'))
@@ -175,10 +171,13 @@ class App:
             elif "FE" in codigo:
                 
                 self.ativa = False
+                self.vagas_totais = 0
+                self.vagas_ocupadas = 0
+                self.carros_estacionados = []
+                
                 resposta = self.enviar_mensagem_middleware(f'Fechar')
                 cliente_socket.sendall(resposta.encode('utf-8'))
                 self.ativa = False
-                comando_processado = True
             
             # MENSAGENS VINDO DO MIDDLWARE
             elif "ALOCAÇÃO" in codigo:
@@ -186,7 +185,6 @@ class App:
                 
                 resposta = (f'Vagas alocadas')
                 cliente_socket.sendall(resposta.encode('utf-8'))
-                comando_processado = True
             
             # Estacionar o carro solicitado pelo middleware
             elif "ESTACIONAR" in codigo: # Estacionar carro que vem de outra estação.
@@ -200,7 +198,6 @@ class App:
                 
                 resposta = (f'Estacionou')
                 cliente_socket.sendall(resposta.encode('utf-8'))
-                comando_processado = True
             
             # Verificar se o carro ta estacionado
             elif "ESTACIONADO" in codigo: # Verificar se o carro está estacionado
@@ -221,14 +218,11 @@ class App:
                     resposta = (f'Não está estacionado')
                     cliente_socket.sendall(resposta.encode('utf-8'))
                     
-                comando_processado = True
             
             # Retorna Vagas da estação
             elif "VAGAS" in codigo:
-                with self.lock:
-                    resposta = (f'{self.vagas_totais}-{self.vagas_ocupadas}')
-                    cliente_socket.sendall(resposta.encode('utf-8'))
-                    comando_processado = True
+                resposta = (f'{self.vagas_totais}-{self.vagas_ocupadas}')
+                cliente_socket.sendall(resposta.encode('utf-8'))
             
             # Atualizar dados vindos da eleição
             elif "ATUALIZAR" in codigo:
@@ -243,15 +237,11 @@ class App:
                 
                 resposta = (f'Atualizado')
                 cliente_socket.sendall(resposta.encode('utf-8'))
-                
-                comando_processado = True
+        
         else:
             resposta = (f'Estação {self.nome} não está ativa comando perdido {comando}.')
             cliente_socket.sendall(resposta.encode('utf-8'))
-            comando_processado = True
         
-        while not comando_processado:
-            time.sleep(1)
         
                             
     def enviar_mensagem_middleware(self, mensagem):
@@ -269,8 +259,7 @@ class App:
             print(f"Erro ao se conectar ao middleware: {e}")
             time.sleep(2)
             return None
-        # finally:
-        #     cliente_socket.close()
+     
 
     
     
