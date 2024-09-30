@@ -14,14 +14,18 @@ class App:
         self.porta = porta
         self.vagas_totais = 0  # Vagas totais atribuídas a esta estação
         self.vagas_ocupadas = 0    # Inicialmente, nenhuma vaga está ocupada
+        
         self.porta_middleware = int(f"1{porta}")
-
+        
         self.middleware = Middleware(self.nome, '127.0.0.1', 8080, self.porta_middleware, porta ,self)
+        
         self.ativa = False
         self.carros_estacionados = []
+        
         self.lock = threading.Lock() 
 
     def iniciar(self):
+        
         # Inicia o middleware em uma thread separada para comunicação com o gerente.
         middleware_thread = threading.Thread(target=self.middleware.servidor_tcp_middleware)
         middleware_thread.start()
@@ -29,6 +33,8 @@ class App:
         # Inicia o servidor TCP em outra thread para receber comandos via TCP.
         server_thread = threading.Thread(target=self.servidor_tcp)
         server_thread.start()
+
+
 
     def servidor_tcp(self):
         # Configura o servidor TCP que escuta na porta especificada.
@@ -64,25 +70,34 @@ class App:
         """ Função para processar os comandos recebidos via TCP """
         retries = 2
         num = 0
-        partes = comando.strip().split()
         fila_de_espera = []
         comando_processado = False
+        
+        partes = comando.strip().split()
+       
         if not partes:
             return
         
         codigo = partes[0].upper()
+        
         if codigo == "AE":
+            
             print(f'App {self.nome} recebeu: {comando}')
             self.ativar()
             resposta = (f'Estação {self.nome} ativada com sucesso! ')
             cliente_socket.sendall(resposta.encode('utf-8'))
+            
             comando_processado = True
         
         elif self.ativa:
+            
             print(f'App {self.nome} recebeu: {comando}')
 
             if codigo == "VD":
                 vagas = self.enviar_mensagem_middleware(f'Vagas {self.nome}')
+                
+                # Tratamento da string de saida no formato do pdf
+                
                 vagas = eval(vagas)
                 # tem que vir na resposta todas as vagas
                 resposta = ""
@@ -91,12 +106,15 @@ class App:
                 
                 resposta = resposta[:-2] + '.'
                 cliente_socket.sendall(resposta.encode('utf-8'))
+                
                 comando_processado = True
             
             
             elif "RV" in codigo:
                 
+                # Chega RV.id_carro
                 id_carro = codigo.split('.')[1] 
+                # Coloca o carro na fila de espera
                 fila_de_espera.append(id_carro)
                 
                 while fila_de_espera:
@@ -114,18 +132,21 @@ class App:
                         resposta = (f'OK')
                         cliente_socket.sendall(resposta.encode('utf-8'))
                     else:
+                        
                         # Usar a vaga de outra estação atraves do middleware
                         resposta = self.enviar_mensagem_middleware(f'Solicito {id_carro}')
                         
                         if resposta == "OK":
                             fila_de_espera.pop(0)
                             cliente_socket.sendall(resposta.encode('utf-8'))
+                            
                 comando_processado = True        
                     
+    
             elif "LV" in codigo:
                 id_carro = codigo.split('.')[1]
             
-                while num < retries:
+                while num < retries: 
                     
                     if id_carro in self.carros_estacionados:
                         self.carros_estacionados.remove(id_carro)
@@ -141,14 +162,15 @@ class App:
                         resposta = self.enviar_mensagem_middleware(f'Liberar {id_carro}')
                         if resposta == "CARRO NÃO ENCONTRADO":
                             num += 1
-                            continue
+                        else:
+                            resposta = resposta + " " + id_carro
+                            cliente_socket.sendall(resposta.encode('utf-8'))
+                            break
                         
-                        resposta = resposta + " " + id_carro
-                        cliente_socket.sendall(resposta.encode('utf-8'))
-                    comando_processado = True
+                comando_processado = True
+                if resposta == "CARRO NÃO ENCONTRADO":
                     resposta = (f'Carro não encontrado {id_carro}')
                     cliente_socket.sendall(resposta.encode('utf-8'))
-                
                 
             elif "FE" in codigo:
                 
@@ -161,22 +183,26 @@ class App:
             # MENSAGENS VINDO DO MIDDLWARE
             elif "ALOCAÇÃO" in codigo:
                 self.vagas_totais = int(partes[1])
+                
                 resposta = (f'Vagas alocadas')
                 cliente_socket.sendall(resposta.encode('utf-8'))
                 comando_processado = True
             
+            # Estacionar o carro solicitado pelo middleware
             elif "ESTACIONAR" in codigo: # Estacionar carro que vem de outra estação.
+                
                 
                 self.carros_estacionados.append(partes[1])
                 self.vagas_ocupadas += 1
                 
-                msg_middleware = f'Gerente Estacionado {id_carro}'
+                msg_middleware = f'Gerente Estacionado {partes[1]}'
                 resposta_ger = self.enviar_mensagem_middleware(msg_middleware) # Mensagem para registrar carro no gerente
                 
                 resposta = (f'Estacionou')
                 cliente_socket.sendall(resposta.encode('utf-8'))
                 comando_processado = True
             
+            # Verificar se o carro ta estacionado
             elif "ESTACIONADO" in codigo: # Verificar se o carro está estacionado
                 
                 id_carro = partes[1]
@@ -196,13 +222,15 @@ class App:
                     cliente_socket.sendall(resposta.encode('utf-8'))
                     
                 comando_processado = True
-                
+            
+            # Retorna Vagas da estação
             elif "VAGAS" in codigo:
                 with self.lock:
                     resposta = (f'{self.vagas_totais}-{self.vagas_ocupadas}')
                     cliente_socket.sendall(resposta.encode('utf-8'))
                     comando_processado = True
             
+            # Atualizar dados vindos da eleição
             elif "ATUALIZAR" in codigo:
                 self.vagas_totais = int(partes[1])
                 self.vagas_ocupadas = int(partes[2])
@@ -245,6 +273,7 @@ class App:
         #     cliente_socket.close()
 
     
+    
     def ativar(self):
         
         self.ativa = True
@@ -267,7 +296,7 @@ class App:
         
 #     return vagas_por_estacao
 
-def carregar_estacoes(arquivo, total_vagas):
+def carregar_estacoes(arquivo):
     """ Função para carregar as estações a partir de um arquivo e distribuir vagas """
     estacoes = []
     
@@ -281,8 +310,7 @@ def carregar_estacoes(arquivo, total_vagas):
         linhas_estacoes = file.readlines()
     
     num_estacoes = len(linhas_estacoes)
-    # Distribui as vagas entre as estações.
-    # vagas_por_estacao = distribuir_vagas_aleatoriamente(total_vagas, num_estacoes)
+
 
     # Para cada linha do arquivo, cria uma nova instância de `App` com os dados da estação.
     for i, linha in enumerate(linhas_estacoes):
@@ -291,17 +319,16 @@ def carregar_estacoes(arquivo, total_vagas):
             nome, ip, porta = dados_estacao
             # vagas = vagas_por_estacao[i]
             app = App(nome, ip, int(porta))
+            
             estacoes.append(app)
 
     return estacoes
 
 def main():
     # Define o número total de vagas para todas as estações.
-    total_vagas = 100  
     caminho_arquivo = 'file.txt' 
     
-    # Carrega as estações a partir do arquivo e distribui as vagas.
-    estacoes = carregar_estacoes(caminho_arquivo, total_vagas)
+    estacoes = carregar_estacoes(caminho_arquivo)
     
     # Inicia todas as estações em threads separadas.
     threads = []

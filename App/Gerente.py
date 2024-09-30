@@ -7,12 +7,14 @@ class Gerente:
     def __init__(self, ip, porta):
         self.ip = ip
         self.porta = porta
-        self.vagas_estacionamento = 50
+        self.vagas_estacionamento = 5
         self.estacoes_ativas = {}
-        self.estacao_vagas = {}
+        
+        self.estacao_vagas = {} 
         self.conexoes = {}
         self.vagas_ocupadas = {}
         self.id_carros = {}
+        
         self.estacao_index = 0  # Índice para garantir balanceamento das conexões
 
     def iniciar(self):
@@ -26,10 +28,13 @@ class Gerente:
             cliente_thread = threading.Thread(target=self.lidar_com_cliente, args=(cliente,))
             cliente_thread.start()
 
+
     def lidar_com_cliente(self, cliente_socket):
         """ Lida com a conexão de uma estação """
         msg = cliente_socket.recv(1024).decode('utf-8')
+        
         if msg:
+            
             print(f'Gerente recebeu: {msg}')
             partes = msg.split()
 
@@ -57,6 +62,7 @@ class Gerente:
                     
                     vagas = self.estacao_vagas.get(nome_estacao, 0)
                     vagas_ocupadas = self.vagas_ocupadas.get(nome_estacao, 0)
+                    
                     carros = []
                     carros = self.id_carros.get(nome_estacao, [])
                     
@@ -64,6 +70,7 @@ class Gerente:
 
                     if estacao_referencia_info is not None:
                         estacao_referencia = estacao_referencia_info[0]  # Extraindo apenas o nome da estação
+                        
                     else:
                         estacao_referencia = None
                         
@@ -74,6 +81,7 @@ class Gerente:
                     
                     if estacao_referencia is not None:
                         
+                        # Estação completa se refere ao ip e a porta
                         estacao_completa = self.estacoes_ativas.get(estacao_conectada)
                         estacao_completa_formatada = (estacao_conectada,) + estacao_completa
                         
@@ -82,6 +90,7 @@ class Gerente:
                     
                         estacao_completa = self.estacoes_ativas.get(estacao_referencia)
                         estacao_completa_formatada = (estacao_referencia,) + estacao_completa
+                        
                         print(f'Estação {estacao_completa_formatada}.')
                         self.enviar_mensagem_estacao(estacao_conectada, f"Trocar referência {estacao_completa_formatada}")
                         self.conexoes[estacao_conectada] = estacao_referencia
@@ -89,21 +98,21 @@ class Gerente:
                     else:
                         print(f'Só essa estação estava ativa.')
 
+                    # Deletar conexão da estação morta
                     if nome_estacao in self.conexoes:
                         del self.conexoes[nome_estacao]
-                                        
+                                      
+                    # Deletar a estação morta das estções ativas
                     del self.estacoes_ativas[nome_estacao]
                     print(f'GERENTE {nome_estacao} desativada.')
                     
-                    # vagas_ocupadas = self.vagas_ocupadas.get(nome_estacao, 0)
-                    # carros = []
+                    # Deletando o dicinário de carros da estaçao morta
                     if nome_estacao in self.id_carros:
-                        # carros = self.id_carros.get(nome_estacao, [])
                         del self.id_carros[nome_estacao]
                     
+                    # Deletando o dicinário de vagas ocupadas da estaçao morta
                     del self.vagas_ocupadas[nome_estacao]
                     
-                    # mensagem = f'{vagas} {vagas_ocupadas} {carros}'
                     mensagem = f'{vagas} {vagas_ocupadas} {carros}'
                     cliente_socket.sendall(mensagem.encode('utf-8'))
            
@@ -114,13 +123,16 @@ class Gerente:
                 nome_estacao = partes[1]
                 vagas = int(partes[2])
                 
+                # Vagas que a estação lider já tem
                 vagas_estacao = self.estacao_vagas.get(nome_estacao, 0)
+                # Soma com as vagas vindo da eleição
                 vagas = vagas_estacao + vagas
                 
                 vagas_ocupadas_estacao = self.vagas_ocupadas.get(nome_estacao, 0)
                 vagas_ocupadas = int(partes[3])
                 vagas_ocupadas = vagas_ocupadas_estacao + vagas_ocupadas
                 
+                # Colocar a lista de carros estacionados
                 if partes[4] == "None":
                     carros = []
                 else:   
@@ -135,8 +147,10 @@ class Gerente:
                 self.enviar_mensagem_estacao(nome_estacao, f'Gerente Alocação {vagas} {vagas_ocupadas} {carros}')
             
             elif partes[0] == "Estacionado":
+                
                 self.vagas_ocupadas[partes[1]] += 1
                 self.id_carros[partes[1]].append(partes[2])
+                
                 resposta = f'Registro de estacionamento no gerente'
                 cliente_socket.sendall(resposta.encode('utf-8'))
             
@@ -158,7 +172,6 @@ class Gerente:
         if len(estacoes_lista) > 1:
             self.conexoes.clear()  # Limpa as conexões atuais
             
-            # Atualiza as referências na fila circular
             for i in range(len(estacoes_lista)):
                 estacao_atual = estacoes_lista[i]
                 proxima_estacao = estacoes_lista[(i + 1) % len(estacoes_lista)]
@@ -168,20 +181,11 @@ class Gerente:
                 
                 mensagem = f'Conexão {proxima_estacao} {ip} {porta}'
                 self.enviar_mensagem_estacao(estacao_atual, mensagem)
-                
-            # Conecta a última estação de volta à primeira para fechar o loop circular
-            primeira_estacao = estacoes_lista[0]
-            ultima_estacao = estacoes_lista[-1]
-            self.conexoes[ultima_estacao] = (primeira_estacao, *self.estacoes_ativas[primeira_estacao])
             
-            mensagem = f'Conexão {primeira_estacao} {self.estacoes_ativas[primeira_estacao][0]} {self.estacoes_ativas[primeira_estacao][1]}'
-            self.enviar_mensagem_estacao(ultima_estacao, mensagem)
-
-        
 
     def encontrar_estacao_x(self, nome_estacao):
-        """ Encontra a estação que referencia a estação que será desativada """
-        # Percorre todas as conexões para encontrar qual estação aponta para `nome_estacao`
+        """ Encontra a estação que esta conectada a estação que será desativada """
+        
         for estacao_conectada, estacao_referencia_info in self.conexoes.items():
             estacao_referencia_nome = estacao_referencia_info[0]  # Nome da estação referenciada
             if estacao_referencia_nome == nome_estacao:
@@ -206,8 +210,10 @@ class Gerente:
     def informar_vagas_estacoes(self):
         """ Envia a quantidade de vagas para cada estação ativa via TCP """
         for nome_estacao, (ip, porta) in self.estacoes_ativas.items():
+            
             vagas = self.estacao_vagas.get(nome_estacao, 0)
             mensagem = f"Alocação {vagas}"
+            
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.connect((ip, porta))
@@ -233,9 +239,11 @@ class Gerente:
             
     def registrar_estacao(self, nome, ip, porta):
         """ Registra a estação como ativa no Gerente """
+        
         self.estacoes_ativas[nome] = (ip, porta)
         self.vagas_ocupadas[nome] = 0
         self.id_carros[nome] = []
+        
         print(f'Estação {nome} registrada {porta} como ativa no Gerente.')
         
 
